@@ -10,7 +10,7 @@
 
    ​		Mysql的innerDb实现的mvcc，我们的mysql事务中的读提交和可重复读都是通过mvcc进行实现的。InnerDb的undolog行记录有两个列，trx_id和db_roll_ptr，其中trx_id就是我们常说的事务id，每次新增一个事务的时候，事务id就会+1，所以通过事务id能够判断我们的一个事务执行顺序，innerDb每次执行更新的时候会在undolog里面生成一个事务更新记录，这个记录会关联我们的一个事务id。这个就是我们mvcc的多版本的含义，就是每次更新都记录了一个更新记录，而且是一个更新版本链，他们有逻辑关系。当没有事务关联这个记录的时候，这个记录才被允许删除。db_roll_ptr作用是指向上一个版本地址，相当于版本链的指针。
 
-![img](file:///C:\Users\huimeng.li\AppData\Local\Temp\ksohtml19072\wps2.jpg) 
+![img](img/wps2.jpg) 
 
  
 
@@ -100,8 +100,8 @@ private final class Worker extends AbstractQueuedSynchronizer implements Runnabl
 
 Worker这个工作线程，实现了Runnable接口，并持有一个线程thread，一个初始化的任务firstTask。thread是在调用构造方法时通过ThreadFactory来创建的线程，可以用来执行任务；firstTask用它来保存传入的第一个任务，这个任务可以有也可以为null。如果这个值是非空的，那么线程就会在启动初期立即执行这个任务，也就对应核心线程创建时的情况；如果这个值是null，那么就需要创建一个线程去执行任务列表（workQueue）中的任务，也就是非核心线程的创建。
 
-![image-20210527204220143](C:\Users\huimeng.li\AppData\Roaming\Typora\typora-user-images\image-20210527204220143.png)
-
+![image-20210527204220143](img/image-20210527204220143.png)
+   
 线程池需要管理线程的生命周期，需要在线程长时间不运行的时候进行回收。线程池使用一张Hash表去持有线程的引用，这样可以通过添加引用、移除引用这样的操作来控制线程的生命周期。这个时候重要的就是如何判断线程是否在运行。
 
 Worker是通过继承AQS，使用AQS来实现独占锁这个功能。没有使用可重入锁ReentrantLock，而是使用AQS，为的就是实现不可重入的特性去反应线程现在的执行状态。
@@ -110,17 +110,57 @@ Worker是通过继承AQS，使用AQS来实现独占锁这个功能。没有使�
 
 # 分布式
 
-![image-20210527205121529](C:\Users\huimeng.li\AppData\Roaming\Typora\typora-user-images\image-20210527205121529.png)
+## 熔断
+
+![image-20210527205121529](img/image-20210527205121529.png)
+
+## feign原理
+
+![image-20210527205805599](img/image-20210527205805599.png)
 
 
 
+## eureka三级缓存
 
+1. 一级缓存（注册表）ConcurrentHashMap，二级缓存（ReadWriteMap）guava#LoadingCache，三级缓存（ReadOnlyMap）ConcurrentHashMap
 
+2. 注册一个服务实例,向注册表中写入服务实例信息，并使得二级缓存失效
 
+3. 寻找一个服务，从三级缓存中找，如果有则返回，如果没有则去二级缓存拿并更新，如果二级缓存已经失效，触发guava的回调函数从注册表中同步。
 
+4. 数据同步定时器
 
+   每 30s 从二级缓存向三级缓存同步数据
 
+   - 二级缓存有效
+     - 从二级缓存向三级缓存同步数据
+   - 二级缓存失效
+     - 触发二级缓存的同步（从注册表中拉取数据）
 
+   ## zookeeper
 
+   1. zookeeper重要概念
 
+      - Server id（sid，也叫myId）编号越大在选举时候选择算法权重越大，初始启动时候zxid都是0，这时候比的就是sid，
+      -  事务id（Zxid）zookeeper通常以事务id（zxid）来标识数据的新旧程度，zxid越大，代表的数据版本越新，选leader的时候自然会优先选。
+      - Epoch：逻辑时钟，也叫投票的次数，同一轮投票过程中的逻辑时钟值是相同的，每投完一次票这个数据就会增加。
+
+   2. zookeeper启动选举机制
+
+      - 每个节点都维护一个票箱，刚开始投票的时候，由于都不知道大家的zxid，都认为自己的zxid是最大的，所以投票都投自己，投出来的票信息包括自己的zxid和和sid。
+      - 第一轮投票结束后，统计票箱信息，发现没有任何一个节点得票数超过总节点数的一半，就找出最大zxid的节点，然后发起第二轮投票，投给他，依次类推，知道有个节点票数超过了总结点数一半，投票就结束了
+      - 选出leader，修改自己状态，LOKKING改为FOLLOWING，leader状态改为LEADING
+      - 选出leader后，后续再注册进来的节点发现投票结束有leader了，就会把自己LOOKING改为FOLLOWING状态
+
+   3. 运行期间选举
+
+      ​	在 ZooKeeper 运行期间 Leader 和 非 Leader 各司其职，当有非 Leader 服务器宕机或加入不会影响 Leader，但是一旦 Leader 服务器挂了，那么整个 ZooKeeper 集群将暂停对外服务，会触发新一轮的选举。这时候各个服务器的zxid都不一样，也可能一样。
+
+      - 第一次投票，每台机器都会将票投给自己。
+      - 接着每台机器都会将自己的投票发给其他机器，如果发现其他机器的 zxid 比自己大，那么就需要改投票重新投一次。比如 server1 收到了三张票，发现 server2 的 xzid 为 102，pk 一下发现自己输了，后面果断改投票选 server2 为老大。
+      - zxid相同时，比较sid
+
+   4. zookeeper脑裂
+
+      ​	假如说某个leader假死了，然后别人选出来了先的leader，然后老的leader又复活了，这时候老的leader发出写命令是被从节点拒绝掉的，因为每次选举都会维护一个递增Epoch，从节点发现Epoch小于当前，就会拒绝同步
 
