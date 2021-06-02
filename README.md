@@ -87,6 +87,79 @@
 
    - 使用unsafe。compareandswap方法保证线程安全访问修改（cas思想）
 
+### AQS的实现案例
+
+1. CountDownLatch:CountDownLatch可以理解为一个使用多线程的时候提供的线程管理的计数器，downLatch和await方法，构造方法的时候指定多线程的个数，然后每个子线程里面任务执行完以后调用downLatch，主线程调用await，就可以实现我们的多线程等待同意提交了。原理就是，构造方法指定了一个基于AQS共享模式实现的共享锁，downLatch方法每次调用实际上就是对共享锁的释放。await实际上是拿着当前的主线程去尝试获取CountDownLatch的共享锁（调用的AQS的acquireSharedInterruptibly方法），
+
+   ```java
+   public final void acquireSharedInterruptibly(int arg)
+           throws InterruptedException {
+       if (Thread.interrupted())
+           throw new InterruptedException();
+       if (tryAcquireShared(arg) < 0)
+           doAcquireSharedInterruptibly(arg);
+   }
+   ```
+
+   acquireSharedInterruptibly这个方法里面有个基于模板方法重写的tryAcquireShared，注意这个tryAcquireShared方法是CountDownLatch自己重写的逻辑
+
+   ```java
+   protected int tryAcquireShared(int acquires) {
+       return (getState() == 0) ? 1 : -1;
+   }
+   ```
+
+   从这两个方法我们可以得出一个结论：如果当前AQS的state==0（代表所有的线程执行完了），这时候就不会走把当前线程加入AQS队列等待逻辑。如果state！=0，那就就会把当前主线程加入到我们的等待队列里面等待。
+
+   那么既然当前主线程被睡眠了，那么什么时候被唤醒继续执行呢？既然我们的主线程是在共享锁的等待队列里面，那么理论来说当我们有线程释放共享锁的时候，应该会立即就会执行了啊，这样一来我们就无法保证主线程肯定是在所有子线程执行完毕才开始执行。
+
+   我们刚才说过，在我们子线程执行完毕后我们主动调用downLatch方法的时候，其实就是一个主动释放共享锁的操作，其内部原理其实调用的就是AQS提供的releaseShared方法，源码如下：
+
+   ```java
+   public final boolean releaseShared(int arg) {
+       if (tryReleaseShared(arg)) {
+           doReleaseShared();
+           return true;
+       }
+       return false;
+   }
+   ```
+
+   跟await一样的套路，调用了一个tryReleaseShared(arg)的方法，这个是基于模板方法CountDownLatch自己实现的逻辑，代码如下：
+
+   ```java
+   protected boolean tryReleaseShared(int releases) {
+       // Decrement count; signal when transition to zero
+       for (;;) {
+           int c = getState();
+           if (c == 0)
+               return false;
+           int nextc = c-1;
+           if (compareAndSetState(c, nextc))
+               return nextc == 0;
+       }
+   }
+   ```
+
+   代码逻辑看起来很简单
+
+   - 如果当前AQS的state是0，说明资源已全部被释放掉，直接返回false
+   - 如果CAS修改state=state-1成功，那么说明释放锁成功，然后修改后state是否等于0
+
+   结论：如果释放锁以后返回state==0 为true时，才允许唤醒等待队列里面的线程（里面放的是调用await方法时放入的主线程）
+
+   **总结：CountDownLatch其实是初始化了一个指定共享锁数量的共享锁，调用downLatch方法时等于对共享锁的一次释放（所数量减一），当所有共享锁全部释放完以后（锁数量为0），会触发唤醒AQS中队列里面的线程。调用await方法相当于强制把当前的主线程放到AQS的等待队列里面，然后等待downLatch方法释放完全部的锁后被唤醒执行**
+
+2. 
+
+
+
+
+
+
+
+
+
 ## 线程池ThreadPoolExecutor
 
 线程池为了掌握线程的状态并维护线程的生命周期，设计了线程池内的工作线程Worker。我们来看一下它的部分代码：
