@@ -1,3 +1,5 @@
+[TOC]
+
 #  mysql
 
 1. 为什么mysql索引使用B+树而不是B树
